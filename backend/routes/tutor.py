@@ -4,8 +4,9 @@ Tutor API Routes - Handles chat and tutoring functionality
 from flask import Blueprint, request, jsonify, session
 
 from models import TutorSession, Message, QuizResponse, User
-from services.ai_tutor import ai_tutor
 from services.analytics import analytics_service
+from services.llm_factory import LLMFactory
+import services.memory_service as memory_service
 
 tutor_bp = Blueprint('tutor', __name__, url_prefix='/api/tutor')
 
@@ -31,6 +32,7 @@ def chat():
     topic = data.get('topic', 'General')
     
     user = get_current_user()
+    lti_user_data = session.get('lti_user', {})
     lti_context = session.get('lti_context', {})
     
     tutor_session = None
@@ -54,8 +56,15 @@ def chat():
             for m in messages[-10:]
         ]
     
+    # Build enhanced context with ALL LTI data
     context = {
         'topic': topic,
+        'user_name': lti_user_data.get('name', 'Estudiante'),
+        'user_email': lti_user_data.get('email', ''),
+        'user_role': lti_user_data.get('role', 'student'),
+        'course_name': lti_context.get('context_title', ''),
+        'course_id': lti_context.get('context_id', ''),
+        'resource_title': lti_context.get('resource_title', ''),
         'course_info': lti_context.get('context_title', '')
     }
     
@@ -67,7 +76,7 @@ def chat():
         context['student_level'] = student_profile.get('recommended_difficulty', 'medium')
         
         if student_profile.get('needs_intervention'):
-            predictive_hint = ai_tutor.get_predictive_hint(
+            predictive_hint = llm_service.get_predictive_hint(
                 topic,
                 student_profile,
                 user_message
@@ -75,7 +84,23 @@ def chat():
             if predictive_hint:
                 context['predictive_hint'] = predictive_hint
     
-    ai_response = ai_tutor.get_response(
+    # Inject Adaptive Memory context
+    if user:
+        mem_context = memory_service.build_memory_context(user.id, lti_context.get('resource_id', 'default'))
+        context.update(mem_context)
+
+    # Inject RAG context (document knowledge base)
+    try:
+        from services import rag_service
+        resource_id = lti_context.get('resource_id', 'default')
+        rag_ctx = rag_service.retrieve_context(user_message, resource_id, k=3)
+        if rag_ctx:
+            context['rag_context'] = rag_ctx
+    except Exception:
+        pass  # RAG is optional
+
+    llm_service = LLMFactory.get_tutor()
+    ai_response = llm_service.get_response(
         user_message,
         conversation_history,
         context
@@ -102,11 +127,51 @@ def chat():
         'response': ai_response,
         'session_id': tutor_session.id if tutor_session else None
     }
-    
+
     if 'predictive_hint' in context:
         response_data['predictive_hint'] = context['predictive_hint']
-    
+
+    # Update adaptive memory every 5 exchanges (best-effort, non-blocking)
+    if tutor_session and user:
+        msgs = Message.get_by_session(tutor_session.id)
+        lti_ctx = session.get('lti_context', {})
+        if len(msgs) % 10 == 0:   # every 5 back-and-forth exchanges
+            resource_id = lti_ctx.get('resource_id', 'default')
+            memory_service.update_memory_from_session(user.id, resource_id, tutor_session.id, llm_service)
+
     return jsonify(response_data)
+
+
+@tutor_bp.route('/welcome', methods=['GET'])
+def get_welcome():
+    """Return a personalized welcome message based on user's adaptive memory"""
+    lti_user_data = session.get('lti_user', {})
+    lti_context = session.get('lti_context', {})
+    user = get_current_user()
+
+    user_name = lti_user_data.get('name', 'Estudiante')
+    resource_id = lti_context.get('resource_id', 'default')
+
+    if not user:
+        return jsonify({
+            'welcome': f"¡Hola, {user_name}! 👋 Bienvenido/a. Soy tu tutor virtual.",
+            'has_history': False
+        })
+
+    llm_service = LLMFactory.get_tutor()
+    welcome_msg = memory_service.generate_welcome_message(
+        user_name=user_name,
+        user_id=user.id,
+        resource_id=resource_id,
+        llm_service=llm_service
+    )
+
+    mem = __import__('models').AdaptiveMemory.get(user.id, resource_id)
+    return jsonify({
+        'welcome': welcome_msg,
+        'has_history': mem is not None and mem.session_count > 0,
+        'memory': mem.to_dict() if mem else None
+    })
 
 
 @tutor_bp.route('/analyze-answer', methods=['POST'])
@@ -127,7 +192,7 @@ def analyze_answer():
     
     lti_context = session.get('lti_context', {})
     
-    analysis = ai_tutor.analyze_answer(
+    analysis = llm_service.analyze_answer(
         question,
         student_answer,
         correct_answer
@@ -239,7 +304,7 @@ def get_predictive_hint():
         lti_context.get('context_id')
     )
     
-    hint = ai_tutor.get_predictive_hint(
+    hint = llm_service.get_predictive_hint(
         topic,
         student_profile,
         current_question

@@ -223,3 +223,149 @@ class LearningAnalytics:
                 if context_id is None or analytics.context_id == context_id:
                     result.append(analytics)
         return result
+
+
+class LTIResourceConfig:
+    """Configuration for a specific LTI Resource Link (context)"""
+    
+    def __init__(self, resource_id: str, mode: str = 'tutor', tutor_prompt: str = None, quiz_data: List[Dict] = None):
+        self.resource_id = resource_id
+        self.mode = mode  # 'tutor' or 'quiz'
+        self.tutor_prompt = tutor_prompt or "Eres un tutor útil y amigable."
+        self.quiz_data = quiz_data or []  # List of questions
+        self.updated_at = datetime.utcnow()
+    
+    def to_dict(self):
+        return {
+            'resource_id': self.resource_id,
+            'mode': self.mode,
+            'tutor_prompt': self.tutor_prompt,
+            'quiz_data': self.quiz_data,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+    
+    def save(self):
+        self.updated_at = datetime.utcnow()
+        _resource_configs[self.resource_id] = self
+        return self
+    
+    @staticmethod
+    def get_by_resource_id(resource_id: str):
+        return _resource_configs.get(resource_id)
+    
+    @staticmethod
+    def get_or_create(resource_id: str):
+        if resource_id not in _resource_configs:
+            config = LTIResourceConfig(resource_id)
+            config.save()
+        return _resource_configs[resource_id]
+
+# Initialize storage
+_resource_configs = {}
+
+
+class ConfigTemplate:
+    """Reusable configuration templates"""
+    
+    def __init__(self, name: str, context_id: str = None, mode: str = 'tutor', tutor_prompt: str = None, quiz_data: List[Dict] = None):
+        self.id = str(uuid.uuid4())
+        self.name = name
+        self.context_id = context_id  # Optional: templates can be course-specific or global
+        self.mode = mode
+        self.tutor_prompt = tutor_prompt or "Eres un tutor útil y amigable."
+        self.quiz_data = quiz_data or []
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'context_id': self.context_id,
+            'mode': self.mode,
+            'tutor_prompt': self.tutor_prompt,
+            'quiz_data': self.quiz_data,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+        }
+    
+    def save(self):
+        self.updated_at = datetime.utcnow()
+        _templates[self.id] = self
+        return self
+    
+    @staticmethod
+    def get_by_id(template_id: str):
+        return _templates.get(template_id)
+    
+    @staticmethod
+    def get_all(context_id: str = None):
+        """Get all templates, optionally filtered by context"""
+        if context_id:
+            return [t for t in _templates.values() if t.context_id == context_id or t.context_id is None]
+        return list(_templates.values())
+    
+    @staticmethod
+    def delete(template_id: str):
+        if template_id in _templates:
+            del _templates[template_id]
+            return True
+        return False
+
+# Initialize template storage
+_templates = {}
+
+
+# ===== Adaptive Memory =====
+_adaptive_memory = {}
+
+class AdaptiveMemory:
+    """Per-user persistent memory across sessions for proactive tutoring"""
+
+    def __init__(self, user_id: str, resource_id: str):
+        self.id = str(uuid.uuid4())
+        self.user_id = user_id
+        self.resource_id = resource_id
+        self.summary = None            # Compressed text summary of all past sessions
+        self.last_topics = []          # Topics discussed most recently
+        self.weak_areas = []           # Recurring struggle areas
+        self.strong_areas = []         # Mastered topics
+        self.session_count = 0         # Total sessions
+        self.total_messages = 0        # Total messages exchanged
+        self.average_quiz_score = None # Average quiz score if any
+        self.last_seen = None
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+
+    def to_dict(self):
+        return {
+            'user_id': self.user_id,
+            'resource_id': self.resource_id,
+            'summary': self.summary,
+            'last_topics': self.last_topics,
+            'weak_areas': self.weak_areas,
+            'strong_areas': self.strong_areas,
+            'session_count': self.session_count,
+            'total_messages': self.total_messages,
+            'average_quiz_score': self.average_quiz_score,
+            'last_seen': self.last_seen.isoformat() if self.last_seen else None,
+        }
+
+    def save(self):
+        self.updated_at = datetime.utcnow()
+        key = f"{self.user_id}:{self.resource_id}"
+        _adaptive_memory[key] = self
+        return self
+
+    @staticmethod
+    def get_or_create(user_id: str, resource_id: str):
+        key = f"{user_id}:{resource_id}"
+        if key not in _adaptive_memory:
+            mem = AdaptiveMemory(user_id, resource_id)
+            mem.save()
+        return _adaptive_memory[key]
+
+    @staticmethod
+    def get(user_id: str, resource_id: str):
+        key = f"{user_id}:{resource_id}"
+        return _adaptive_memory.get(key)

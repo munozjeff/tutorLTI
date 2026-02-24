@@ -163,5 +163,99 @@ class AnalyticsService:
         actions.append("Consultar con el tutor virtual para aclarar dudas")
         return actions
 
+    # ===== Class-Level Analytics for Instructor Dashboard =====
+
+    @staticmethod
+    def get_class_heatmap(resource_id: str) -> List[Dict]:
+        """
+        Per-question error rate for a given resource.
+        Returns sorted list: [{question_id, question_text, error_rate, total_attempts}]
+        """
+        from models import _quiz_responses  # access in-memory store
+        question_stats: Dict[str, Dict] = {}
+
+        for user_responses in _quiz_responses.values():
+            for r in user_responses:
+                if r.context_id and r.context_id != resource_id:
+                    continue  # filter by resource if possible
+                qid = r.question_id or 'unknown'
+                if qid not in question_stats:
+                    question_stats[qid] = {
+                        'question_id': qid,
+                        'question_text': (r.question_text or qid)[:80],
+                        'total': 0,
+                        'wrong': 0
+                    }
+                question_stats[qid]['total'] += 1
+                if not r.is_correct:
+                    question_stats[qid]['wrong'] += 1
+
+        result = []
+        for stat in question_stats.values():
+            total = stat['total']
+            error_rate = round((stat['wrong'] / total) * 100, 1) if total > 0 else 0
+            result.append({
+                'question_id': stat['question_id'],
+                'question_text': stat['question_text'],
+                'error_rate': error_rate,
+                'total_attempts': total
+            })
+        result.sort(key=lambda x: x['error_rate'], reverse=True)
+        return result
+
+    @staticmethod
+    def get_engagement_stats(resource_id: str) -> Dict:
+        """Aggregated engagement stats for an LTI resource"""
+        from models import _sessions, _messages
+        resource_sessions = [s for s in _sessions.values() if s.resource_id == resource_id]
+        unique_users = len({s.user_id for s in resource_sessions})
+        total_messages = sum(len(_messages.get(s.id, [])) for s in resource_sessions)
+        avg_messages = round(total_messages / len(resource_sessions), 1) if resource_sessions else 0
+        return {
+            'total_sessions': len(resource_sessions),
+            'unique_students': unique_users,
+            'total_messages': total_messages,
+            'avg_messages_per_session': avg_messages,
+        }
+
+    @staticmethod
+    def get_topic_mastery(resource_id: str) -> Dict:
+        """Aggregate topic mastery across all students in a resource"""
+        from models import _analytics
+        resource_analytics = [
+            a for a in _analytics.values()
+            if a.context_id == resource_id or a.context_id is None
+        ]
+        mastered = [a.topic for a in resource_analytics if a.average_score >= 80]
+        struggling = [a.topic for a in resource_analytics if a.average_score < 60]
+        class_avg = (
+            round(sum(a.average_score for a in resource_analytics) / len(resource_analytics), 1)
+            if resource_analytics else None
+        )
+        return {
+            'class_average': class_avg,
+            'mastered_topics': list(set(mastered)),
+            'struggling_topics': list(set(struggling)),
+        }
+
+    @staticmethod
+    def get_students_needing_help(resource_id: str) -> List[Dict]:
+        """Return list of students flagged for intervention"""
+        from models import _analytics, _users
+        flagged = []
+        for a in _analytics.values():
+            if (a.context_id == resource_id or a.context_id is None) and a.needs_intervention:
+                user = _users.get(a.user_id) or next(
+                    (u for u in _users.values() if u.id == a.user_id), None)
+                flagged.append({
+                    'user_id': a.user_id,
+                    'name': user.name if user else 'Unknown',
+                    'topic': a.topic,
+                    'score': round(a.average_score, 1),
+                    'reason': a.intervention_reason
+                })
+        flagged.sort(key=lambda x: x['score'])
+        return flagged
+
 
 analytics_service = AnalyticsService()

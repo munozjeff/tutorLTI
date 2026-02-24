@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+    restart: always
+    volumes:
+      - ./backend:/app
+      - ./backend/keys:/app/keys
+      - ./backend/instance:/app/instance
+    env_file:
+      - ./backend/.env
+    command: ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "app:app"]
+    environment:
+      - FLASK_ENV=production
+      - KEY_DIR=/app/keys
+
+  frontend:
+    build:
+      context: ./frontend
+    restart: always
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      - backend
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  ollama_data:

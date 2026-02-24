@@ -6,10 +6,15 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-from config import config
-from routes import lti_bp, tutor_bp
-
+# Load environment variables before importing any application components
 load_dotenv()
+
+from config import config
+from routes import lti_bp, tutor_bp, config_bp
+from routes.lti_info import lti_info_bp
+from routes.analytics import analytics_bp
+from routes.grades import grades_bp
+from routes.documents import documents_bp
 
 
 def create_app(config_name=None):
@@ -20,14 +25,42 @@ def create_app(config_name=None):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
     
-    # Configure CORS
+    # Configure CORS - Allow frontend and Open edX instance
+    # This allows both the frontend and Open edX to make requests to the backend
+    allowed_origins = [
+        app.config.get('FRONTEND_URL', 'http://localhost:3000'),
+    ]
+    
+    # Add Open edX issuer if configured
+    lti_issuer = app.config.get('LTI_ISSUER', '')
+    if lti_issuer and lti_issuer not in allowed_origins:
+        allowed_origins.append(lti_issuer)
+    
+    # For local development, also allow localhost variants
+    if app.config.get('FLASK_ENV') == 'development':
+        allowed_origins.extend([
+            'http://localhost:8000',  # Common Open edX LMS port
+            'http://localhost:18000', # Tutor dev LMS
+            'http://127.0.0.1:8000',
+            'http://127.0.0.1:18000',
+            'http://localhost:8001',  # Open edX Studio
+            'http://localhost:18010', # Tutor dev Studio
+        ])
+    
     CORS(app, 
-         origins=[app.config.get('FRONTEND_URL', 'http://localhost:3000')],
-         supports_credentials=True)
+         origins=allowed_origins,
+         supports_credentials=True,
+         allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'])
     
     # Register blueprints
     app.register_blueprint(lti_bp)
     app.register_blueprint(tutor_bp)
+    app.register_blueprint(config_bp, url_prefix='/api/config')
+    app.register_blueprint(lti_info_bp)
+    app.register_blueprint(analytics_bp)
+    app.register_blueprint(grades_bp)
+    app.register_blueprint(documents_bp)
     
     # Health check endpoint
     @app.route('/health', methods=['GET'])
